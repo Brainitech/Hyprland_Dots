@@ -12,22 +12,23 @@ else
 fi
 
 wallpaper="$HOME/.curr_wall_static.jpg"
-if [ -f "$wallpaper" ]; then
-	magick "$wallpaper" -resize 1920x1080^ -gravity center -extent 1920x1080 "$cache_dir/screenshot.png"
-	magick "$wallpaper" -resize "400x400^" -gravity center -extent 400x400 "$cache_dir/avatar.png"
-else
-	grim "$cache_dir/screenshot.png"
-	magick "$cache_dir/screenshot.png" -resize "400x400^" -gravity center -extent 400x400 "$cache_dir/avatar.png"
+state_file="$cache_dir/last_state"
+current_wall=$(readlink -f "$wallpaper" 2>/dev/null || echo "$wallpaper")
+
+# Fast bypass: if wallpaper + color haven't changed and cached panels exist, exit immediately
+if [ -f "$state_file" ] \
+	&& [ -f "$cache_dir/top_left_panel.png" ] \
+	&& [ -f "$cache_dir/bottom_left_panel.png" ] \
+	&& [ -f "$cache_dir/right_panel.png" ] \
+	&& [ -f "$cache_dir/avatar.png" ]; then
+	if [ "$current_wall|$background" = "$(cat "$state_file" 2>/dev/null)" ]; then
+		exit 0
+	fi
 fi
 
-# Calculate panel slice dimensions and offsets
+# Panel slice dimensions and offsets (based on 1920x1080 canvas)
 initial_cutout_size="800x608"
-res=$(magick identify -format "%wx%h" "$cache_dir/screenshot.png" 2>/dev/null || echo "1920x1080")
-sw=$(echo "$res" | cut -d'x' -f1)
-sh=$(echo "$res" | cut -d'x' -f2)
-ox=$(( (sw - 800) / 2 ))
-oy=$(( (sh - 608) / 2 ))
-initial_cutout_offset="${ox}+${oy}"
+initial_cutout_offset="560+236"
 
 top_left_offset="0+0"
 top_left_size="384x384"
@@ -38,15 +39,34 @@ bottom_left_size="384x192"
 right_offset="416+0"
 right_size="384x608"
 
-# Crop screenshot to required size
-# Resize to 0.1x, apply size 5 blur, resize to 10x (essentially being 50x blur for less resources used)
-# Generate a 0.1x size overlay of $background, 40% alpha and resize it 10x
-# Composite it on top of blurred screenshot
-# Split top and bottom panels
+if [ -f "$wallpaper" ]; then
+	# Generate 400x400 center-cropped avatar
+	magick "$wallpaper" -resize "400x400^" -gravity center -extent 400x400 "$cache_dir/avatar.png"
 
-magick \( "$cache_dir"/screenshot.png -crop "$initial_cutout_size"+"$initial_cutout_offset" -scale 10% -blur 0x5 -resize 1000% +repage \) \
-	\( -size "$initial_cutout_size" xc:"$background" -alpha set -channel A -evaluate set 40% \) \
-	-composite "$cache_dir"/combi.png
-magick "$cache_dir"/combi.png -crop "$top_left_size"+"$top_left_offset" "$cache_dir"/top_left_panel.png
-magick "$cache_dir"/combi.png -crop "$bottom_left_size"+"$bottom_left_offset" "$cache_dir"/bottom_left_panel.png
-magick "$cache_dir"/combi.png -crop "$right_size"+"$right_offset" "$cache_dir"/right_panel.png
+	# Generate all 3 panels in a single pass without intermediate disk writes
+	magick "$wallpaper" -resize 1920x1080^ -gravity center -extent 1920x1080 +gravity \
+		-crop "${initial_cutout_size}+${initial_cutout_offset}" +repage \
+		-scale 10% -blur 0x5 -resize 1000% \
+		\( -size "$initial_cutout_size" xc:"$background" -alpha set -channel A -evaluate set 40% \) -composite \
+		\( +clone -crop "${top_left_size}+${top_left_offset}" +repage -write "$cache_dir/top_left_panel.png" +delete \) \
+		\( +clone -crop "${bottom_left_size}+${bottom_left_offset}" +repage -write "$cache_dir/bottom_left_panel.png" +delete \) \
+		-crop "${right_size}+${right_offset}" +repage "$cache_dir/right_panel.png"
+else
+	screenshot="$cache_dir/screenshot.png"
+	grim "$screenshot"
+	magick "$screenshot" -resize "400x400^" -gravity center -extent 400x400 "$cache_dir/avatar.png"
+	magick "$screenshot" -resize 1920x1080^ -gravity center -extent 1920x1080 +gravity \
+		-crop "${initial_cutout_size}+${initial_cutout_offset}" +repage \
+		-scale 10% -blur 0x5 -resize 1000% \
+		\( -size "$initial_cutout_size" xc:"$background" -alpha set -channel A -evaluate set 40% \) -composite \
+		\( +clone -crop "${top_left_size}+${top_left_offset}" +repage -write "$cache_dir/top_left_panel.png" +delete \) \
+		\( +clone -crop "${bottom_left_size}+${bottom_left_offset}" +repage -write "$cache_dir/bottom_left_panel.png" +delete \) \
+		-crop "${right_size}+${right_offset}" +repage "$cache_dir/right_panel.png"
+	rm -f "$screenshot"
+fi
+
+# Clean up obsolete intermediate files if present
+rm -f "$cache_dir/screenshot.png" "$cache_dir/combi.png"
+
+# Save state
+echo "$current_wall|$background" > "$state_file"
